@@ -23,8 +23,8 @@ class Scraper:
         self.start_threads()
 
     def start_threads(self):
-        Thread(target=self.begin).start()
-        Thread(target=self.run_schedule).start()
+        Thread(target=self.begin, daemon=True).start()
+        Thread(target=self.run_schedule, daemon=True).start()
 
     def save_list_to_file(self):
         try:
@@ -37,13 +37,14 @@ class Scraper:
         try:
             with open('rssList.txt', 'rb') as f:
                 self.all_links = pickle.load(f)
+                self.titles = [link[0] for link in self.all_links]
         except Exception as e:
             print(f"Error loading list from file: {e}")
 
     @lru_cache(maxsize=128)
     def get_links(self, url):
         try:
-            response = requests.get(url)
+            response = requests.get(url, timeout=10)
             response.raise_for_status()
             soup = BeautifulSoup(response.content, 'html.parser')
             a_tags = soup.find_all('a', href=lambda href: href and 'attachment.php' in href)
@@ -97,7 +98,7 @@ class Scraper:
         ET.SubElement(channel, 'link').text = 'https://instagram.com/mr.anonymous.wiz'
 
         try:
-            response = requests.get(self.url)
+            response = requests.get(self.url, timeout=10)
             response.raise_for_status()
             content = response.content
             soup = BeautifulSoup(content, 'html.parser')
@@ -124,7 +125,7 @@ class Scraper:
                 self.load_list_from_file()
         print('Fetching Started')
         try:
-            response = requests.get(self.url)
+            response = requests.get(self.url, timeout=10)
             response.raise_for_status()
             content = response.content
             soup = BeautifulSoup(content, 'html.parser')
