@@ -11,47 +11,45 @@ import itertools
 import concurrent.futures
 from pymongo import MongoClient, errors
 
-
 class Scraper:
     def __init__(self):
+        # Config from environment
         self.url = os.environ.get('SCRAPER_URL', 'https://www.1tamilmv.se/')
         self.port = int(os.environ.get("PORT", 8000))
-        self.refresh_interval = int(os.environ.get("REFRESH_INTERVAL", 120))
+        self.refresh_interval = int(os.environ.get("REFRESH_INTERVAL", 120))  # seconds
 
-        # --- MongoDB INIT ---
+        # MongoDB setup
         mongo_uri = os.environ.get("MONGODB_URI", "mongodb+srv://bahov19860:RY4Qz3jtp9NXqkUS@cluster0.zztswen.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
         self.client = MongoClient(mongo_uri)
         self.db = self.client["rssfeed"]
         self.collection = self.db["feeds"]
         self.collection.create_index("link", unique=True)
 
-        # --- Flask App ---
+        # Flask app setup
         self.app = Flask(__name__)
         self.setup_routes()
 
-        # --- Threads to run app and scheduled fetch ---
-        Thread(target=self.begin).start()
-        Thread(target=self.run_schedule).start()
+        # Start scraping threads
+        Thread(target=self.begin, daemon=True).start()
+        Thread(target=self.run_schedule, daemon=True).start()
 
     @lru_cache(maxsize=128)
     def get_links(self, url):
-        """Extracts all attachment links from a given thread URL."""
         try:
             response = requests.get(url, timeout=10)
             soup = BeautifulSoup(response.content, 'html.parser')
             a_tags = soup.find_all('a', href=lambda href: href and 'attachment.php' in href)
             return a_tags
         except Exception as e:
-            print(f"[ERROR] Failed to get attachment links from {url}: {e}")
+            print(f"[ERROR] get_links({url}): {e}")
             return []
 
     def get_links_with_delay(self, link):
         result = self.get_links(link)
-        sleep(2)  # Delay between thread fetches
+        sleep(2)
         return result
 
     def scrape(self, links):
-        """Scrape the attachment links from given forum threads."""
         with concurrent.futures.ThreadPoolExecutor() as executor:
             results = executor.map(self.get_links_with_delay, itertools.islice(links, 30))
             for result in results:
@@ -61,61 +59,62 @@ class Scraper:
                     yield (title, href)
 
     def fetch_links_from_homepage(self):
-        """Extracts forum thread links from homepage."""
         try:
             response = requests.get(self.url, timeout=10)
             soup = BeautifulSoup(response.content, 'html.parser')
             paragraphs = soup.find_all('p', style='font-size: 13.1px;')
             links = [a['href'] for p in paragraphs for a in p.find_all('a', href=True)]
-            return [link for link in links if 'index.php?/forums/topic/' in link]
+            thread_links = [link for link in links if 'index.php?/forums/topic/' in link]
+            print(f"[DEBUG] Found {len(thread_links)} thread links.")
+            return thread_links
         except Exception as e:
-            print(f"[ERROR] Failed to fetch homepage data: {e}")
+            print(f"[ERROR] fetch_links_from_homepage(): {e}")
             return []
 
     def begin(self):
-        """Initial scraping (if MongoDB is empty) and RSS creation."""
         if self.collection.count_documents({}) > 0:
-            print("[INIT] MongoDB already populated. Skipping full scrape.")
+            print("[INIT] MongoDB already has data. Skipping scrape.")
             self.generate_rss_file()
             return
 
-        print("[INIT] Starting first-time scrape...")
+        print("[INIT] Starting first scrape...")
         thread_links = self.fetch_links_from_homepage()
         scraped = list(self.scrape(thread_links))
-        documents = [{"title": t, "link": l, "pubDate": datetime.now().isoformat()} for t, l in scraped]
+        print(f"[INIT] Scraped {len(scraped)} items.")
 
+        if not scraped:
+            print("[INIT] No data scraped. Skipping insert.")
+            self.generate_rss_file()
+            return
+
+        documents = [{"title": t, "link": l, "pubDate": datetime.now().isoformat()} for t, l in scraped]
         try:
             self.collection.insert_many(documents, ordered=False)
-            print(f"[INIT] Inserted {len(documents)} documents.")
-        except errors.BulkWriteError as bwe:
-            print("[WARN] Some duplicates ignored during initial insert.")
+            print(f"[INIT] Inserted {len(documents)} items.")
+        except errors.BulkWriteError:
+            print("[WARN] Duplicate items ignored.")
 
         self.generate_rss_file()
 
     def job(self):
-        """Scheduled job that fetches and updates MongoDB and RSS."""
-        print("[REFRESH] Fetching new threads...")
+        print("[REFRESH] Checking for updates...")
         thread_links = self.fetch_links_from_homepage()
         scraped = list(self.scrape(thread_links))
+        print(f"[REFRESH] Scraped {len(scraped)} items.")
 
-        existing_links = set(
-            doc["link"] for doc in self.collection.find({}, {'link': 1})
-        )
+        existing_links = set(doc["link"] for doc in self.collection.find({}, {'link': 1}))
         new_items = [item for item in scraped if item[1] not in existing_links]
 
         if new_items:
-            print(f"[REFRESH] {len(new_items)} new items found.")
-            docs = [
-                {"title": t, "link": l, "pubDate": datetime.now().isoformat()}
-                for t, l in new_items
-            ]
+            print(f"[REFRESH] Found {len(new_items)} new items.")
+            docs = [{"title": t, "link": l, "pubDate": datetime.now().isoformat()} for t, l in new_items]
             try:
                 self.collection.insert_many(docs, ordered=False)
             except errors.BulkWriteError:
-                print("[WARN] Some duplicates ignored during update.")
+                print("[WARN] Some duplicates ignored in refresh.")
             self.generate_rss_file()
         else:
-            print("[REFRESH] No new items found.")
+            print("[REFRESH] No new items.")
 
     def run_schedule(self):
         while True:
@@ -123,7 +122,6 @@ class Scraper:
             self.job()
 
     def generate_rss_file(self):
-        """Creates or updates the XML RSS output file."""
         rss = ET.Element('rss', version='2.0')
         channel = ET.SubElement(rss, 'channel')
         ET.SubElement(channel, 'title').text = 'TamilMV RSS Feed'
@@ -139,7 +137,7 @@ class Scraper:
 
         tree = ET.ElementTree(rss)
         tree.write("tamilmvRSS.xml", encoding='utf-8', xml_declaration=True)
-        print("[RSS] RSS feed updated with latest data.")
+        print("[RSS] Feed updated.")
 
     def setup_routes(self):
         @self.app.route("/")
@@ -153,7 +151,6 @@ class Scraper:
     def run(self):
         print(f"[APP] Flask server started on port {self.port}")
         self.app.run(host="0.0.0.0", port=self.port)
-
 
 if __name__ == "__main__":
     scraper = Scraper()
