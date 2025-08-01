@@ -119,7 +119,7 @@ class Scraper:
 
     def run_schedule(self):
         while True:
-            sleep(1500)
+            sleep(60)
             self.job()
 
     def generate_rss_file(self):
@@ -128,7 +128,7 @@ class Scraper:
         channel = ET.SubElement(rss, 'channel')
         ET.SubElement(channel, 'title').text = 'TamilMV RSS Feed'
         ET.SubElement(channel, 'description').text = 'Share and support'
-        ET.SubElement(channel, 'link').text = 'https://instagram.com/mr.anonymous.wiz'
+        ET.SubElement(channel, 'link').text = 'https://t.me/VC_Movie'
 
         records = list(self.collection.find().sort("pubDate", -1).limit(10))
         for doc in records:
