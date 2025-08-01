@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 EXPOSE 8000
 
 # Define environment variable
-ENV SCRAPER_URL=https://www.1tamilmv.eu/
+ENV SCRAPER_URL=https://www.1tamilmv.se/
 
 # Run scraper.py when the container launches
 CMD ["python", "./scraper.py"]
