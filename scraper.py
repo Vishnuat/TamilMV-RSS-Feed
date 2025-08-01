@@ -19,7 +19,7 @@ class Scraper:
         self.port = int(os.environ.get("PORT", 8000))
 
         # --- MongoDB INIT ---
-        mongo_uri = os.environ.get("MONGODB_URI", "mongodb://localhost:27017/")
+        mongo_uri = os.environ.get("MONGODB_URI", "mongodb+srv://bahov19860:RY4Qz3jtp9NXqkUS@cluster0.zztswen.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
         self.client = MongoClient(mongo_uri)
         self.db = self.client["rssfeed"]
         self.collection = self.db["feeds"]
