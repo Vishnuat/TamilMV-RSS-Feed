@@ -20,7 +20,7 @@ class Scraper:
     def __init__(self):
         self.all_links = []
         self.titles = []
-        self.url = 'https://www.1tamilmv.eu/'
+        self.url = 'https://www.1tamilmv.se/'
         Thread(target=self.begin).start()
         self.app = Flask(__name__)
         self.port = int(os.environ.get("PORT", 8000))
@@ -80,7 +80,7 @@ class Scraper:
         channel = ET.SubElement(rss, 'channel')
         ET.SubElement(channel, 'title').text = 'TamilMV RSS'
         ET.SubElement(channel, 'description').text = 'Share and support'
-        ET.SubElement(channel, 'link').text = 'https://instagram.com/mr.anonymous.wiz'
+        ET.SubElement(channel, 'link').text = 'https://t.me/VC_Movie'
 
         response = requests.get(self.url)
         content = response.content
