@@ -13,10 +13,10 @@ from pymongo import MongoClient, errors
 
 class Scraper:
     def __init__(self):
-        # Config from environment
+        # Environment config
         self.url = os.environ.get('SCRAPER_URL', 'https://www.1tamilmv.se/')
         self.port = int(os.environ.get("PORT", 8000))
-        self.refresh_interval = int(os.environ.get("REFRESH_INTERVAL", 120))  # seconds
+        self.refresh_interval = int(os.environ.get("REFRESH_INTERVAL", 120))
 
         # MongoDB setup
         mongo_uri = os.environ.get("MONGODB_URI", "mongodb+srv://bahov19860:RY4Qz3jtp9NXqkUS@cluster0.zztswen.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
@@ -25,21 +25,26 @@ class Scraper:
         self.collection = self.db["feeds"]
         self.collection.create_index("link", unique=True)
 
-        # Flask app setup
+        # Telegram config
+        self.telegram_token = os.environ.get("6809355138:AAEECbkiAg4OQrgigO61PW-lHOOPXaGS2HA")
+        self.telegram_chat_id = os.environ.get("-1002095851077")
+
+        # Flask app
         self.app = Flask(__name__)
         self.setup_routes()
 
-        # Start scraping threads
+        # Start background tasks
         Thread(target=self.begin, daemon=True).start()
         Thread(target=self.run_schedule, daemon=True).start()
 
     @lru_cache(maxsize=128)
     def get_links(self, url):
+        """Get all 'attachment.php' links from forum post."""
         try:
-            response = requests.get(url, timeout=10)
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36'}
+            response = requests.get(url, headers=headers, timeout=10)
             soup = BeautifulSoup(response.content, 'html.parser')
-            a_tags = soup.find_all('a', href=lambda href: href and 'attachment.php' in href)
-            return a_tags
+            return soup.find_all('a', href=lambda href: href and 'attachment.php' in href)
         except Exception as e:
             print(f"[ERROR] get_links({url}): {e}")
             return []
@@ -60,50 +65,46 @@ class Scraper:
 
     def fetch_links_from_homepage(self):
         try:
-            response = requests.get(self.url, timeout=10)
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36'}
+            response = requests.get(self.url, headers=headers, timeout=10)
             soup = BeautifulSoup(response.content, 'html.parser')
             paragraphs = soup.find_all('p', style='font-size: 13.1px;')
             links = [a['href'] for p in paragraphs for a in p.find_all('a', href=True)]
-            thread_links = [link for link in links if 'index.php?/forums/topic/' in link]
-            print(f"[DEBUG] Found {len(thread_links)} thread links.")
-            return thread_links
+            return [link for link in links if 'index.php?/forums/topic/' in link]
         except Exception as e:
             print(f"[ERROR] fetch_links_from_homepage(): {e}")
             return []
 
     def begin(self):
         if self.collection.count_documents({}) > 0:
-            print("[INIT] MongoDB already has data. Skipping scrape.")
+            print("[INIT] MongoDB already has data.")
             self.generate_rss_file()
             return
 
         print("[INIT] Starting first scrape...")
         thread_links = self.fetch_links_from_homepage()
         scraped = list(self.scrape(thread_links))
-        print(f"[INIT] Scraped {len(scraped)} items.")
-
         if not scraped:
-            print("[INIT] No data scraped. Skipping insert.")
+            print("[INIT] No items scraped.")
             self.generate_rss_file()
             return
 
-        documents = [{"title": t, "link": l, "pubDate": datetime.now().isoformat()} for t, l in scraped]
+        docs = [{"title": t, "link": l, "pubDate": datetime.now().isoformat()} for t, l in scraped]
         try:
-            self.collection.insert_many(documents, ordered=False)
-            print(f"[INIT] Inserted {len(documents)} items.")
+            self.collection.insert_many(docs, ordered=False)
+            print(f"[INIT] Inserted {len(docs)} items.")
         except errors.BulkWriteError:
-            print("[WARN] Duplicate items ignored.")
+            print("[WARN] Duplicates skipped.")
 
         self.generate_rss_file()
 
     def job(self):
-        print("[REFRESH] Checking for updates...")
+        print("[REFRESH] Running scheduled scrape...")
         thread_links = self.fetch_links_from_homepage()
         scraped = list(self.scrape(thread_links))
-        print(f"[REFRESH] Scraped {len(scraped)} items.")
 
-        existing_links = set(doc["link"] for doc in self.collection.find({}, {'link': 1}))
-        new_items = [item for item in scraped if item[1] not in existing_links]
+        existing = set(doc['link'] for doc in self.collection.find({}, {'link': 1}))
+        new_items = [item for item in scraped if item[1] not in existing]
 
         if new_items:
             print(f"[REFRESH] Found {len(new_items)} new items.")
@@ -111,10 +112,13 @@ class Scraper:
             try:
                 self.collection.insert_many(docs, ordered=False)
             except errors.BulkWriteError:
-                print("[WARN] Some duplicates ignored in refresh.")
+                print("[WARN] Some duplicates skipped.")
+
             self.generate_rss_file()
+            first_title, first_link = new_items[0]
+            self.send_telegram_message(first_title, first_link)
         else:
-            print("[REFRESH] No new items.")
+            print("[REFRESH] No new items found.")
 
     def run_schedule(self):
         while True:
@@ -131,17 +135,38 @@ class Scraper:
         latest = self.collection.find().sort("pubDate", -1).limit(10)
         for doc in latest:
             item = ET.SubElement(channel, 'item')
-            ET.SubElement(item, 'title').text = doc.get('title')
-            ET.SubElement(item, 'link').text = doc.get('link')
-            ET.SubElement(item, 'pubDate').text = doc.get('pubDate', datetime.now().isoformat())
+            ET.SubElement(item, 'title').text = doc['title']
+            ET.SubElement(item, 'link').text = doc['link']
+            ET.SubElement(item, 'pubDate').text = doc['pubDate']
 
         tree = ET.ElementTree(rss)
         tree.write("tamilmvRSS.xml", encoding='utf-8', xml_declaration=True)
-        print("[RSS] Feed updated.")
+        print("[RSS] RSS feed saved.")
+
+    def send_telegram_message(self, title, link):
+        if not self.telegram_token or not self.telegram_chat_id:
+            print("[WARN] Telegram credentials missing.")
+            return
+
+        url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
+        payload = {
+            "chat_id": self.telegram_chat_id,
+            "text": f"📢 <b>New movie scraped:</b>\n<b>{title}</b>",
+            "parse_mode": "HTML",
+            "reply_markup": {
+                "inline_keyboard": [[{"text": "🔗 Download", "url": link}]]
+            }
+        }
+
+        try:
+            requests.post(url, json=payload)
+            print("[TELEGRAM] Message sent.")
+        except Exception as e:
+            print(f"[ERROR] Telegram alert failed: {e}")
 
     def setup_routes(self):
         @self.app.route("/")
-        def serve_rss():
+        def index():
             return send_file("tamilmvRSS.xml")
 
         @self.app.route("/status")
@@ -149,7 +174,7 @@ class Scraper:
             return Response("✓ Scraper is running", status=200)
 
     def run(self):
-        print(f"[APP] Flask server started on port {self.port}")
+        print(f"[APP] Running on port {self.port}")
         self.app.run(host="0.0.0.0", port=self.port)
 
 if __name__ == "__main__":
